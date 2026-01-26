@@ -9,9 +9,10 @@ export class Envs {
   static originalEnvVars = new Map();
   static accessedEnvVars = new Map();
 
-  static VOD_ALLOWED_PLATFORMS = ['qiyi', 'bilibili1', 'imgo', 'youku', 'qq']; // vod允许的播放平台
-  static ALLOWED_PLATFORMS = ['qiyi', 'bilibili1', 'imgo', 'youku', 'qq', 'renren', 'hanjutv', 'bahamut', 'dandan', 'custom']; // 全部源允许的播放平台
-  static ALLOWED_SOURCES = ['360', 'vod', 'tmdb', 'douban', 'tencent', 'youku', 'iqiyi', 'imgo', 'bilibili', 'renren', 'hanjutv', 'bahamut', 'dandan', 'custom']; // 允许的源
+  static VOD_ALLOWED_PLATFORMS = ['qiyi', 'bilibili1', 'imgo', 'youku', 'qq', 'sohu', 'leshi']; // vod允许的播放平台
+  static ALLOWED_PLATFORMS = ['qiyi', 'bilibili1', 'imgo', 'youku', 'qq', 'renren', 'hanjutv', 'bahamut', 'dandan', 'sohu', 'leshi', 'animeko', 'custom']; // 全部源允许的播放平台
+  static ALLOWED_SOURCES = ['360', 'vod', 'tmdb', 'douban', 'tencent', 'youku', 'iqiyi', 'imgo', 'bilibili', 'renren', 'hanjutv', 'bahamut', 'dandan', 'sohu', 'leshi', 'animeko', 'custom']; // 允许的源
+  static MERGE_ALLOWED_SOURCES = ['tencent', 'youku', 'iqiyi', 'imgo', 'bilibili', 'renren', 'hanjutv', 'bahamut', 'dandan', 'sohu', 'leshi', 'animeko']; // 允许的源合并
 
   /**
    * 获取环境变量
@@ -136,6 +137,47 @@ export class Envs {
   }
 
   /**
+   * 解析源合并配置
+   * 从环境变量 MERGE_SOURCE_PAIRS 获取配置
+   * 支持使用分号或逗号分隔多组配置
+   * 支持一主多从配置，第一个为主源，后续为副源
+   * 格式示例: bilibili&animeko, dandan&animeko&bahamut
+   * @returns {Array} 合并配置数组 [{primary: 'dandan', secondaries: ['animeko', 'bahamut']}, ...]
+   */
+  static resolveMergeSourcePairs() {
+    const config = this.get('MERGE_SOURCE_PAIRS', '', 'string');
+    if (!config) return [];
+    
+    // 使用正则同时支持分号(;)和逗号(,)作为配置组的分隔符
+    return config.split(/[,;]/)
+      .map(group => {
+        // 过滤空字符串
+        if (!group || !group.includes('&')) return null;
+        
+        // 按 & 分割，第一个是主源，剩余的是副源列表
+        const parts = group.split('&').map(s => s.trim()).filter(s => s);
+        
+        if (parts.length < 2) return null;
+
+        const primary = parts[0];
+        const secondaries = parts.slice(1);
+
+        // 验证主源是否在允许列表中
+        if (!this.MERGE_ALLOWED_SOURCES.includes(primary)) return null;
+
+        // 过滤有效的副源，且排除主源本身（防止自我合并）
+        const validSecondaries = secondaries.filter(sec => 
+            sec !== primary && this.MERGE_ALLOWED_SOURCES.includes(sec)
+        );
+
+        if (validSecondaries.length === 0) return null;
+
+        return { primary, secondaries: validSecondaries };
+      })
+      .filter(Boolean);
+  }
+
+  /**
    * 解析剧集标题过滤正则
    * @returns {RegExp} 过滤正则表达式
    */
@@ -180,6 +222,32 @@ export class Envs {
   }
 
   /**
+   * 解析剧名映射表
+   * @returns {Map} 剧名映射表
+   */
+  static resolveTitleMappingTable() {
+    const mappingStr = this.get('TITLE_MAPPING_TABLE', '', 'string').trim();
+    const mappingTable = new Map();
+
+    if (!mappingStr) {
+      return mappingTable;
+    }
+
+    // 解析格式："唐朝诡事录->唐朝诡事录之西行;国色芳华->锦绣芳华"
+    const pairs = mappingStr.split(';');
+    for (const pair of pairs) {
+      if (pair.includes('->')) {
+        const [original, mapped] = pair.split('->').map(s => s.trim());
+        if (original && mapped) {
+          mappingTable.set(original, mapped);
+        }
+      }
+    }
+
+    return mappingTable;
+  }
+
+  /**
    * 获取记录的环境变量 JSON
    * @returns {Map<any, any>} JSON 字符串
    */
@@ -212,6 +280,7 @@ export class Envs {
       'VOD_REQUEST_TIMEOUT': { category: 'source', type: 'number', description: 'VOD请求超时时间，默认10000', min: 5000, max: 30000 },
       'BILIBILI_COOKIE': { category: 'source', type: 'text', description: 'B站Cookie' },
       'YOUKU_CONCURRENCY': { category: 'source', type: 'number', description: '优酷并发配置，默认8', min: 1, max: 16 },
+	  'MERGE_SOURCE_PAIRS': { category: 'source', type: 'text', description: '源合并配置，配置后将对应源合并同时一起获取弹幕返回，支持多源链式合并，第一个为主源。\n格式：源1&源2&源3，多组用逗号分隔。\n示例：dandan&animeko&bahamut, bilibili&animeko\n目前允许的源：tencent,youku,iqiyi,imgo,bilibili,sohu,leshi,renren,hanjutv,bahamut,dandan,animeko' },
       
       // 匹配配置
       'PLATFORM_ORDER': { category: 'match', type: 'multi-select', options: this.ALLOWED_PLATFORMS, description: '平台排序配置' },
@@ -219,6 +288,7 @@ export class Envs {
       'ENABLE_EPISODE_FILTER': { category: 'match', type: 'boolean', description: '集标题过滤开关' },
       'STRICT_TITLE_MATCH': { category: 'match', type: 'boolean', description: '严格标题匹配模式' },
       'TITLE_TO_CHINESE': { category: 'match', type: 'boolean', description: '外语标题转换中文开关' },
+      'TITLE_MAPPING_TABLE': { category: 'match', type: 'map', description: '剧名映射表，用于自动匹配时替换标题进行搜索，格式：原始标题->映射标题;原始标题->映射标题;... ，例如："唐朝诡事录->唐朝诡事录之西行;国色芳华->锦绣芳华"' },
 
       // 弹幕配置
       'BLOCKED_WORDS': { category: 'danmu', type: 'text', description: '屏蔽词列表' },
@@ -261,6 +331,7 @@ export class Envs {
       vodRequestTimeout: this.get('VOD_REQUEST_TIMEOUT', '10000', 'string'), // vod超时时间（默认10秒）
       bilibliCookie: this.get('BILIBILI_COOKIE', '', 'string', true), // b站cookie
       youkuConcurrency: Math.min(this.get('YOUKU_CONCURRENCY', 8, 'number'), 16), // 优酷并发配置
+	  mergeSourcePairs: this.resolveMergeSourcePairs(), // 源合并配置，用于将源合并获取
       platformOrderArr: this.resolvePlatformOrder(), // 自动匹配优选平台
       episodeTitleFilter: this.resolveEpisodeTitleFilter(), // 剧集标题正则过滤
       blockedWords: this.get('BLOCKED_WORDS', '', 'string'), // 屏蔽词列表
@@ -282,6 +353,7 @@ export class Envs {
       danmuOutputFormat: this.get('DANMU_OUTPUT_FORMAT', 'json', 'string'), // 弹幕输出格式配置（默认 json，可选值：json, xml）
       strictTitleMatch: this.get('STRICT_TITLE_MATCH', false, 'boolean'), // 严格标题匹配模式配置（默认 false，宽松模糊匹配）
       titleToChinese: this.get('TITLE_TO_CHINESE', false, 'boolean'), // 外语标题转换中文开关
+      titleMappingTable: this.resolveTitleMappingTable(), // 剧名映射表，用于自动匹配时替换标题进行搜索
       rememberLastSelect: this.get('REMEMBER_LAST_SELECT', true, 'boolean'), // 是否记住手动选择结果，用于match自动匹配时优选上次的选择（默认 true，记住）
       MAX_LAST_SELECT_MAP: this.get('MAX_LAST_SELECT_MAP', 100, 'number'), // 记住上次选择映射缓存大小限制（默认 100）
       deployPlatformAccount: this.get('DEPLOY_PLATFROM_ACCOUNT', '', 'string', true), // 部署平台账号ID配置（默认空）

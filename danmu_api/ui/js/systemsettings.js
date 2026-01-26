@@ -255,10 +255,33 @@ function confirmDeploymentByLogs() {
 
 // 检查URL中的token是否与currentAdminToken匹配
 function checkAdminToken() {
-    let _reverseProxy = "";
+    let _reverseProxy = customBaseUrl; // 使用全局变量 customBaseUrl
 
     // 获取URL路径并提取token
-    const urlPath = window.location.pathname.replace(_reverseProxy, "");
+    let urlPath = window.location.pathname;
+    
+    // 如果配置了反代路径，必须先剥离它
+    if(_reverseProxy) {
+        try {
+            // 解析配置中的路径部分，例如 http://192.168.8.1:2333/danmu_api => /danmu_api
+            let proxyPath = _reverseProxy.startsWith('http') 
+                ? new URL(_reverseProxy).pathname 
+                : _reverseProxy;
+            
+            // 确保移除尾部斜杠
+            if (proxyPath.endsWith('/')) {
+                proxyPath = proxyPath.slice(0, -1);
+            }
+            
+            // 如果当前URL包含此前缀，则移除它
+            if(proxyPath && urlPath.startsWith(proxyPath)) {
+                urlPath = urlPath.substring(proxyPath.length);
+            }
+        } catch(e) {
+            console.error("解析反代路径失败", e);
+        }
+    }
+
     const pathParts = urlPath.split('/').filter(part => part !== '');
     const urlToken = pathParts.length > 0 ? pathParts[0] : currentToken; // 如果没有路径段，使用默认token
     
@@ -273,7 +296,21 @@ async function checkDeployPlatformConfig() {
         // 获取当前页面的协议、主机和端口
         const protocol = window.location.protocol;
         const host = window.location.host;
-        return { success: false, message: '请先配置ADMIN_TOKEN环境变量并使用正确的token访问以启用系统部署功能！\\n\\n访问方式：' + protocol + '//' + host + '/{ADMIN_TOKEN}' };
+        
+        let displayBase;
+        if (customBaseUrl) {
+            displayBase = customBaseUrl.startsWith('http') 
+                ? customBaseUrl 
+                : (protocol + '//' + host + customBaseUrl);
+        } else {
+            displayBase = protocol + '//' + host;
+        }
+
+        if (displayBase.endsWith('/')) {
+            displayBase = displayBase.slice(0, -1);
+        }
+        
+        return { success: false, message: '请先配置ADMIN_TOKEN环境变量并使用正确的token访问以启用系统部署功能！\\n\\n访问方式：' + displayBase + '/{ADMIN_TOKEN}' };
     }
     
     try {
@@ -456,16 +493,86 @@ function renderValueInput(item) {
         // 设置拖动事件
         setupDragAndDrop();
 
+    } else if (type === 'map') {
+        // 映射表类型
+        const pairs = value ? value.split(';').map(pair => pair.trim()).filter(pair => pair) : [];
+        const mapItems = pairs.map(pair => {
+            if (pair.includes('->')) {
+                const [left, right] = pair.split('->').map(s => s.trim());
+                return { left, right };
+            }
+            return { left: pair, right: '' };
+        });
+
+        container.innerHTML = \`
+            <label>映射配置</label>
+            <div class="map-container" id="map-container">
+                \${mapItems.map((item, index) => \`
+                    <div class="map-item" data-index="\${index}">
+                        <input type="text" class="map-input-left" placeholder="原始值" value="\${item.left}">
+                        <span class="map-separator">-></span>
+                        <input type="text" class="map-input-right" placeholder="映射值" value="\${item.right}">
+                        <button type="button" class="btn btn-danger map-remove-btn" onclick="removeMapItem(this)">删除</button>
+                    </div>
+                \`).join('')}
+                <div class="map-item-template" style="display: none;">
+                    <input type="text" class="map-input-left" placeholder="原始值">
+                    <span class="map-separator">-></span>
+                    <input type="text" class="map-input-right" placeholder="映射值">
+                    <button type="button" class="btn btn-danger map-remove-btn" onclick="removeMapItem(this)">删除</button>
+                </div>
+            </div>
+            <button type="button" class="btn btn-primary" onclick="addMapItem()">添加映射项</button>
+        \`;
+
     } else {
         // 文本输入
-        // 如果值太长，使用textarea而不是input
-        if (value && value.length > 50) {
-            // 计算行数，每行约50个字符
-            const rows = Math.min(Math.max(Math.ceil(value.length / 50), 3), 10); // 最少3行，最多10行
+        const currentKey = document.getElementById('env-key') ? document.getElementById('env-key').value : '';
+        const isBilibiliCookie = currentKey === 'BILIBILI_COOKIE';
+        
+        if (isBilibiliCookie) {
+            // Bilibili Cookie 专用编辑界面
+            const rows = value && value.length > 50 ? Math.min(Math.max(Math.ceil(value.length / 50), 3), 8) : 3;
+            container.innerHTML = \`
+                <div class="bili-cookie-editor">
+                    <div class="bili-cookie-status" id="bili-cookie-status">
+                        <span class="bili-status-icon">🔍</span>
+                        <span class="bili-status-text">检测中...</span>
+                    </div>
+                    
+                    <div class="bili-cookie-actions">
+                        <button type="button" class="btn btn-primary btn-sm" onclick="startBilibiliQRLogin()">
+                            📱 扫码登录
+                        </button>
+                    </div>
+                    
+                    <label>Cookie 值</label>
+                    <textarea class="form-group" id="text-value" placeholder="SESSDATA=xxx; bili_jct=xxx; DedeUserID=xxx;" rows="\${rows}">\${value}</textarea>
+                    <div class="form-help">推荐使用扫码登录自动获取，或手动粘贴包含 SESSDATA 和 bili_jct 的完整 Cookie</div>
+                </div>
+            \`;
+            
+            // 自动检测 Cookie 状态 + 监听输入变化（防抖）
+            setTimeout(() => {
+                autoCheckBilibiliCookieStatus();
+
+                const inputEl = document.getElementById('text-value');
+                if (inputEl) {
+                    let debounceTimer = null;
+                    inputEl.addEventListener('input', () => {
+                        if (debounceTimer) clearTimeout(debounceTimer);
+                        debounceTimer = setTimeout(() => {
+                            autoCheckBilibiliCookieStatus();
+                        }, 600);
+                    });
+                }
+            }, 120);
+        } else if (value && value.length > 50) {
+            const rows = Math.min(Math.max(Math.ceil(value.length / 50), 3), 10);
             container.innerHTML = \`
                 <label>变量值 *</label>
                 <textarea id="text-value" placeholder="例如: localhost" rows="\${rows}" class="text-monospace">\${value}</textarea>
-            \`; 
+            \`;
         } else {
             container.innerHTML = \`
                 <label>变量值 *</label>
@@ -536,7 +643,7 @@ function addSelectedTag(element) {
     // 禁用可选项
     element.classList.add('disabled');
 
-    // 重新设置拖动事件
+    // 重新设置拖动事件，确保新添加的标签也能拖动和删除
     setupDragAndDrop();
 }
 
@@ -559,6 +666,9 @@ function removeSelectedTag(button) {
     if (availableTag) {
         availableTag.classList.remove('disabled');
     }
+    
+    // 重新设置拖动事件，确保其他标签仍然可以拖动
+    setupDragAndDrop();
 }
 
 // 更新多选选项
@@ -582,18 +692,39 @@ function updateMultiOptions() {
 
 // 设置拖放功能
 let draggedElement = null;
+let touchDragging = false;
 
+// 为删除按钮添加触摸事件监听器，以确保其可以被点击
 function setupDragAndDrop() {
     const container = document.getElementById('selected-tags');
     const tags = container.querySelectorAll('.selected-tag');
 
     tags.forEach(tag => {
+        // 鼠标拖放事件
         tag.addEventListener('dragstart', handleDragStart);
         tag.addEventListener('dragend', handleDragEnd);
         tag.addEventListener('dragover', handleDragOver);
         tag.addEventListener('drop', handleDrop);
         tag.addEventListener('dragenter', handleDragEnter);
         tag.addEventListener('dragleave', handleDragLeave);
+        
+        // 触摸拖放事件
+        tag.addEventListener('touchstart', handleTouchStart);
+        tag.addEventListener('touchmove', handleTouchMove);
+        tag.addEventListener('touchend', handleTouchEnd);
+        
+        // 确保删除按钮可以被点击
+        const removeBtn = tag.querySelector('.remove-btn');
+        if (removeBtn) {
+            // 阻止删除按钮上的触摸事件冒泡到父元素
+            removeBtn.addEventListener('touchstart', function(e) {
+                e.stopPropagation();
+            });
+            
+            removeBtn.addEventListener('touchend', function(e) {
+                e.stopPropagation();
+            });
+        }
     });
 }
 
@@ -650,6 +781,201 @@ function handleDrop(e) {
     return false;
 }
 
+// 触摸拖动事件处理
+function handleTouchStart(e) {
+    // 检查点击的是否是删除按钮
+    if (e.target.classList.contains('remove-btn')) {
+        // 如果点击的是删除按钮，则不执行拖动操作
+        return;
+    }
+    
+    // 防止默认的触摸行为
+    e.preventDefault();
+    
+    // 获取触摸点
+    const touch = e.touches[0];
+    
+    // 模拟拖动开始
+    draggedElement = this;
+    this.classList.add('dragging');
+    touchDragging = true;
+    
+    // 添加拖动样式
+    this.style.transform = 'rotate(5deg)';
+    this.style.opacity = '0.8';
+    this.style.zIndex = '1000';
+    
+    // 添加触摸移动和结束事件监听器到文档
+    document.addEventListener('touchmove', handleTouchMove, { passive: false });
+    document.addEventListener('touchend', handleTouchEnd, { passive: false });
+}
+
+function handleTouchMove(e) {
+    if (!touchDragging || !draggedElement) return;
+    
+    // 防止默认的触摸行为
+    e.preventDefault();
+    
+    // 使用 requestAnimationFrame 来优化性能
+    if (window.requestAnimationFrame) {
+        window.requestAnimationFrame(() => {
+            // 获取触摸点位置
+            const touch = e.touches[0];
+            
+            // 获取拖动元素的尺寸
+            const elementRect = draggedElement.getBoundingClientRect();
+            
+            // 创建一个临时的拖动元素，而不是移动原始元素
+            if (!document.getElementById('touch-drag-ghost')) {
+                const ghostElement = draggedElement.cloneNode(true);
+                ghostElement.id = 'touch-drag-ghost';
+                ghostElement.style.position = 'fixed'; // 使用 fixed 而不是 absolute
+                ghostElement.style.left = '0';
+                ghostElement.style.top = '0';
+                ghostElement.style.pointerEvents = 'none'; // 防止干扰触摸事件
+                ghostElement.style.zIndex = '9999';
+                ghostElement.style.transform = 'translate(' + (touch.clientX - (elementRect.width / 2)) + 'px, ' + (touch.clientY - (elementRect.height / 2)) + 'px) rotate(5deg)';
+                ghostElement.style.opacity = '0.8';
+                ghostElement.style.boxSizing = 'border-box'; // 确保尺寸计算正确
+                ghostElement.style.width = elementRect.width + 'px'; // 固定宽度
+                ghostElement.style.height = elementRect.height + 'px'; // 固定高度
+                document.body.appendChild(ghostElement);
+            } else {
+                const ghostElement = document.getElementById('touch-drag-ghost');
+                ghostElement.style.transform = 'translate(' + (touch.clientX - (elementRect.width / 2)) + 'px, ' + (touch.clientY - (elementRect.height / 2)) + 'px) rotate(5deg)';
+            }
+            
+            // 检查与其他元素的碰撞
+            const container = document.getElementById('selected-tags');
+            const tags = Array.from(container.querySelectorAll('.selected-tag')).filter(tag => tag !== draggedElement);
+            let targetElement = null;
+            
+            for (const tag of tags) {
+                const rect = tag.getBoundingClientRect();
+                if (touch.clientX >= rect.left && touch.clientX <= rect.right &&
+                    touch.clientY >= rect.top && touch.clientY <= rect.bottom) {
+                    targetElement = tag;
+                    break;
+                }
+            }
+            
+            // 高亮目标元素
+            document.querySelectorAll('.selected-tag').forEach(tag => {
+                if (tag !== draggedElement) {
+                    tag.classList.remove('drag-over');
+                }
+            });
+            
+            if (targetElement) {
+                targetElement.classList.add('drag-over');
+            }
+        });
+    } else {
+        // 降级处理，如果不支持 requestAnimationFrame
+        const touch = e.touches[0];
+        
+        // 获取拖动元素的尺寸
+        const elementRect = draggedElement.getBoundingClientRect();
+        
+        // 创建一个临时的拖动元素，而不是移动原始元素
+        if (!document.getElementById('touch-drag-ghost')) {
+            const ghostElement = draggedElement.cloneNode(true);
+            ghostElement.id = 'touch-drag-ghost';
+            ghostElement.style.position = 'fixed'; // 使用 fixed 而不是 absolute
+            ghostElement.style.left = '0';
+            ghostElement.style.top = '0';
+            ghostElement.style.pointerEvents = 'none'; // 防止干扰触摸事件
+            ghostElement.style.zIndex = '9999';
+            ghostElement.style.transform = 'translate(' + (touch.clientX - (elementRect.width / 2)) + 'px, ' + (touch.clientY - (elementRect.height / 2)) + 'px) rotate(5deg)';
+            ghostElement.style.opacity = '0.8';
+            ghostElement.style.boxSizing = 'border-box'; // 确保尺寸计算正确
+            ghostElement.style.width = elementRect.width + 'px'; // 固定宽度
+            ghostElement.style.height = elementRect.height + 'px'; // 固定高度
+            document.body.appendChild(ghostElement);
+        } else {
+            const ghostElement = document.getElementById('touch-drag-ghost');
+            ghostElement.style.transform = 'translate(' + (touch.clientX - (elementRect.width / 2)) + 'px, ' + (touch.clientY - (elementRect.height / 2)) + 'px) rotate(5deg)';
+        }
+        
+        // 检查与其他元素的碰撞
+        const container = document.getElementById('selected-tags');
+        const tags = Array.from(container.querySelectorAll('.selected-tag')).filter(tag => tag !== draggedElement);
+        let targetElement = null;
+        
+        for (const tag of tags) {
+            const rect = tag.getBoundingClientRect();
+            if (touch.clientX >= rect.left && touch.clientX <= rect.right &&
+                touch.clientY >= rect.top && touch.clientY <= rect.bottom) {
+                targetElement = tag;
+                break;
+            }
+        }
+        
+        // 高亮目标元素
+        document.querySelectorAll('.selected-tag').forEach(tag => {
+            if (tag !== draggedElement) {
+                tag.classList.remove('drag-over');
+            }
+        });
+        
+        if (targetElement) {
+            targetElement.classList.add('drag-over');
+        }
+    }
+}
+
+function handleTouchEnd(e) {
+    if (!touchDragging || !draggedElement) return;
+    
+    // 防止默认的触摸行为
+    e.preventDefault();
+    
+    // 移除临时拖动元素
+    const ghostElement = document.getElementById('touch-drag-ghost');
+    if (ghostElement) {
+        document.body.removeChild(ghostElement);
+    }
+    
+    // 找到目标元素（如果有）
+    const touch = e.changedTouches[0];
+    const targetElement = document.elementFromPoint(touch.clientX, touch.clientY);
+    
+    const container = document.getElementById('selected-tags');
+    const targetTag = targetElement.closest('.selected-tag');
+    
+    // 如果目标是另一个标签，执行交换
+    if (targetTag && targetTag !== draggedElement && container.contains(targetTag)) {
+        const allTags = Array.from(container.querySelectorAll('.selected-tag'));
+        const draggedIndex = allTags.indexOf(draggedElement);
+        const targetIndex = allTags.indexOf(targetTag);
+
+        if (draggedIndex < targetIndex) {
+            targetTag.parentNode.insertBefore(draggedElement, targetTag.nextSibling);
+        } else {
+            targetTag.parentNode.insertBefore(draggedElement, targetTag);
+        }
+    }
+    
+    // 重置元素样式
+    draggedElement.style.transform = '';
+    draggedElement.style.opacity = '';
+    draggedElement.style.zIndex = '';
+    
+    // 移除拖动类
+    draggedElement.classList.remove('dragging');
+    document.querySelectorAll('.selected-tag').forEach(tag => {
+        tag.classList.remove('drag-over');
+    });
+    
+    // 重置变量
+    touchDragging = false;
+    draggedElement = null;
+    
+    // 移除事件监听器
+    document.removeEventListener('touchmove', handleTouchMove);
+    document.removeEventListener('touchend', handleTouchEnd);
+}
+
 // 显示加载遮罩
 function showLoading(text, detail) {
     document.getElementById('loading-text').textContent = text;
@@ -693,6 +1019,7 @@ function renderEnvList() {
         const typeLabel = item.type === 'boolean' ? '布尔' :
                          item.type === 'number' ? '数字' :
                          item.type === 'select' ? '单选' :
+                         item.type === 'map' ? '映射' :
                          item.type === 'multi-select' ? '多选' : '文本';
         const badgeClass = item.type === 'multi-select' ? 'multi' : '';
 
@@ -824,6 +1151,21 @@ document.getElementById('env-form').addEventListener('submit', async function(e)
         value = selectedTags.join(',');
         const options = Array.from(document.querySelectorAll('.available-tag')).map(el => el.dataset.value);
         itemData = { key, value, description, type, options };
+    } else if (type === 'map') {
+        // 获取映射表值
+        const mapItems = document.querySelectorAll('#map-container .map-item');
+        const pairs = [];
+        mapItems.forEach(item => {
+            const leftInput = item.querySelector('.map-input-left');
+            const rightInput = item.querySelector('.map-input-right');
+            const leftValue = leftInput.value.trim();
+            const rightValue = rightInput.value.trim();
+            if (leftValue && rightValue) {
+                pairs.push(leftValue + '->' + rightValue);
+            }
+        });
+        value = pairs.join(';');
+        itemData = { key, value, description, type };
     } else {
         value = document.getElementById('text-value').value.trim();
         itemData = { key, value, description, type };
@@ -882,10 +1224,245 @@ document.getElementById('env-form').addEventListener('submit', async function(e)
         } else {
             addLog(\`操作失败: \${result.message}\`, 'error');
             addLog(\`❌ 操作失败: \${result.message}\`, 'error');
+            customAlert(result.message + '，请检查部署平台相关环境变量配置是否正确');
         }
     } catch (error) {
         addLog(\`更新环境变量失败: \${error.message}\`, 'error');
         addLog(\`❌ 更新环境变量失败: \${error.message}\`, 'error');
+        customAlert(result.message + '，请检查部署平台相关环境变量配置是否正确');
     }
 });
+
+// 添加映射项
+function addMapItem() {
+    const container = document.getElementById('map-container');
+    const template = document.querySelector('.map-item-template');
+    const newItem = template.cloneNode(true);
+    newItem.style.display = 'flex';
+    newItem.classList.remove('map-item-template');
+    newItem.classList.add('map-item');
+    const index = container.querySelectorAll('.map-item').length;
+    newItem.setAttribute('data-index', index);
+    container.appendChild(newItem);
+}
+
+// 删除映射项
+function removeMapItem(button) {
+    const item = button.closest('.map-item');
+    if (item) {
+        item.remove();
+    }
+}
+/* ========================================
+   Bilibili Cookie 扫码登录功能
+   ======================================== */
+let biliQRCheckInterval = null;
+let biliBiliQRKey = null;
+
+async function startBilibiliQRLogin() {
+    // 创建扫码登录模态框
+    if (!document.getElementById('bili-qr-modal')) {
+        const modalHTML = \`
+            <div class="modal" id="bili-qr-modal">
+                <div class="modal-content" style="max-width: 400px;">
+                    <div class="modal-header">
+                        <h3>📱 扫码登录 Bilibili</h3>
+                        <button class="close-btn" onclick="closeBiliQRModal()">×</button>
+                    </div>
+                    <div class="modal-body" style="text-align: center;">
+                        <div id="bili-qr-container">
+                            <div class="loading-spinner" id="bili-qr-loading"></div>
+                            <p id="bili-qr-status">正在生成二维码...</p>
+                            <div id="bili-qr-code" style="display: none;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        \`;
+        document.body.insertAdjacentHTML('beforeend', modalHTML);
+    }
+    
+    const modal = document.getElementById('bili-qr-modal');
+    const qrCode = document.getElementById('bili-qr-code');
+    const qrLoading = document.getElementById('bili-qr-loading');
+    const qrStatus = document.getElementById('bili-qr-status');
+    
+    modal.classList.add('active');
+    qrCode.style.display = 'none';
+    qrCode.innerHTML = '';
+    qrLoading.style.display = 'block';
+    qrStatus.textContent = '正在生成二维码...';
+    
+    if (biliQRCheckInterval) {
+        clearInterval(biliQRCheckInterval);
+    }
+    
+    try {
+        const response = await fetch(buildApiUrl('/api/cookie/qr/generate', true), {
+            method: 'POST'
+        });
+        
+        const result = await response.json();
+        
+        if (result.success && result.data) {
+            biliBiliQRKey = result.data.qrcode_key;
+            const qrUrl = result.data.url;
+            
+            qrCode.innerHTML = '<img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(qrUrl) + '" alt="二维码">';
+            qrCode.style.display = 'block';
+            qrLoading.style.display = 'none';
+            qrStatus.textContent = '请使用 Bilibili APP 扫描';
+            
+            startBiliQRCheck();
+        } else {
+            throw new Error(result.message || '生成二维码失败');
+        }
+    } catch (error) {
+        qrLoading.style.display = 'none';
+        qrStatus.textContent = '❌ ' + error.message;
+    }
+}
+
+function startBiliQRCheck() {
+    if (!biliBiliQRKey) return;
+    
+    const qrStatus = document.getElementById('bili-qr-status');
+    
+    biliQRCheckInterval = setInterval(async () => {
+        try {
+            const response = await fetch(buildApiUrl('/api/cookie/qr/check', true), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ qrcode_key: biliBiliQRKey })
+            });
+            
+            const result = await response.json();
+            
+            if (result.success && result.data) {
+                const code = result.data.code;
+                
+                switch (code) {
+                    case 86101:
+                        qrStatus.textContent = '⏳ 等待扫码...';
+                        break;
+                    case 86090:
+                        qrStatus.textContent = '📱 已扫码，请确认';
+                        break;
+                    case 86038:
+                        qrStatus.textContent = '❌ 二维码已过期';
+                        clearInterval(biliQRCheckInterval);
+                        break;
+                    case 0:
+                        qrStatus.textContent = '✅ 登录成功！';
+                        clearInterval(biliQRCheckInterval);
+                        
+                        if (result.data.cookie) {
+                            fillBilibiliCookie(result.data.cookie);
+                        }
+                        
+                        setTimeout(() => {
+                            closeBiliQRModal();
+                        }, 1000);
+                        break;
+                }
+            }
+        } catch (error) {
+            console.error('检查扫码状态失败:', error);
+        }
+    }, 2000);
+}
+
+function fillBilibiliCookie(cookie) {
+    const textInput = document.getElementById('text-value');
+    if (textInput) {
+        textInput.value = cookie;
+        textInput.dispatchEvent(new Event('input', { bubbles: true }));
+        
+        textInput.style.borderColor = 'var(--success-color, #28a745)';
+        setTimeout(() => {
+            textInput.style.borderColor = '';
+            // 填入后触发检测一次（会提示用户保存）
+            autoCheckBilibiliCookieStatus();
+        }, 2000);
+    }
+}
+
+function closeBiliQRModal() {
+    const modal = document.getElementById('bili-qr-modal');
+    if (modal) {
+        modal.classList.remove('active');
+    }
+    
+    if (biliQRCheckInterval) {
+        clearInterval(biliQRCheckInterval);
+    }
+}
+
+async function autoCheckBilibiliCookieStatus() {
+    const textInput = document.getElementById('text-value');
+    const statusEl = document.getElementById('bili-cookie-status');
+    
+    if (!textInput || !statusEl) return;
+    
+    const cookie = textInput.value.trim();
+    
+    // 如果输入框为空,提示未配置
+    if (!cookie) {
+        statusEl.innerHTML = '<span class="bili-status-icon">⚠️</span><span class="bili-status-text">未配置</span>';
+        return;
+    }
+    
+    statusEl.innerHTML = '<span class="bili-status-icon">🔍</span><span class="bili-status-text">检测中...</span>';
+
+    // 脱敏后的 *...* 无法直接校验，后端会自动改为校验“已保存”的 Cookie
+    const isMasked = /^[*]+$/.test(cookie);
+    const payload = isMasked ? {} : { cookie };
+
+    try {
+        const response = await fetch(buildApiUrl('/api/cookie/verify', true), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const result = await response.json();
+
+        if (result && result.success && result.data) {
+            if (result.data.isValid) {
+                const uname = result.data.uname || '已登录';
+                const expiresAt = result.data.expiresAt;
+                const now = Math.floor(Date.now() / 1000);
+
+                let leftText = '';
+                if (typeof expiresAt === 'number' && expiresAt > now) {
+                    const daysLeft = Math.ceil((expiresAt - now) / (24 * 60 * 60));
+                    leftText = \` (剩余 \${daysLeft} 天)\`;
+                }
+
+                // 用户手动输入/扫码填入的 Cookie → 提示保存
+                if (!isMasked) {
+                    statusEl.innerHTML = \`<span class="bili-status-icon">✅</span><span class="bili-status-text">\${uname}\${leftText} · 请点击保存按钮（Vercel等平台需重新部署后生效）</span>\`;
+                } else {
+                    // 脱敏显示时只展示当前已保存 Cookie 的状态
+                    statusEl.innerHTML = \`<span class="bili-status-icon">✅</span><span class="bili-status-text">\${uname}\${leftText}</span>\`;
+                }
+            } else {
+                const err = result.data.error || 'Cookie无效或已失效';
+                statusEl.innerHTML = \`<span class="bili-status-icon">❌</span><span class="bili-status-text">\${err}，请重新扫码登录并保存</span>\`;
+            }
+        } else {
+            statusEl.innerHTML = '<span class="bili-status-icon">⚠️</span><span class="bili-status-text">检测失败</span>';
+        }
+    } catch (error) {
+        statusEl.innerHTML = '<span class="bili-status-icon">⚠️</span><span class="bili-status-text">检测失败</span>';
+    }
+}
+// 显示 Bilibili Cookie 保存提示
+function showBilibiliCookieSaveHint(text) {
+    const statusEl = document.getElementById('bili-cookie-status');
+    if (!statusEl) return;
+
+    const msg = text || '请点击保存按钮,Vercel等平台需重新部署后生效';
+    statusEl.innerHTML = \`<span class="bili-status-icon">💾</span><span class="bili-status-text">\${msg}</span>\`;
+}
 `;
